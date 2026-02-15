@@ -1,5 +1,4 @@
 import re
-
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -11,14 +10,14 @@ import pandas as pd
 import tkinter as tk
 from tkinter import filedialog
 import matplotlib
+import pyvista as pv
 
-matplotlib.use('TkAgg')
-matplotlib.use('TkAgg')
+matplotlib.use("Qt5Agg")  # 更强的窗口交互支持
+# matplotlib.use('TkAgg')
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 支持中文
 plt.rcParams['axes.unicode_minus'] = False
 active_listeners = []  # 保存所有激活的事件监听 ID
 active_preview = []  # 保存当前预览对象（如线、椭圆）
-
 
 # --- Step 1: 文件选择 ---
 root = tk.Tk()
@@ -43,6 +42,20 @@ with open(max_i_path, encoding='utf-8') as f:
         parts = re.split(r"\s+", line.strip())
         if len(parts) == 2:
             max_i_dict[parts[0]] = float(parts[1])
+
+# --- 构建全局灰度标签字典 ---
+gray_labels = ["9045", "090", "045", "00"]
+suffix_to_gray = {"00": "gray(0,0)", "090": "gray(0,90)", "045": "gray(0,45)", "9045": "gray(90,45)"}
+file_to_grayname = {}
+
+for path in file_paths:
+    fname = os.path.splitext(os.path.basename(path))[0]
+    gray_name = "Unknown"
+    for suffix in gray_labels:
+        if fname.endswith(suffix):
+            gray_name = suffix_to_gray[suffix]
+            break
+    file_to_grayname[os.path.basename(path)] = gray_name
 
 # --- Step 2: Let user select origin on each image ---
 location_file = os.path.join(os.path.dirname(file_paths[0]), "locations.txt")
@@ -108,40 +121,78 @@ btn_ellipse = Button(ax_ellipse, '椭圆工具', color='#dcdcdc', hovercolor='#a
 btn_free = Button(ax_free, '描点工具', color='#dcdcdc', hovercolor='#a9a9a9')
 
 
-def redraw_result():
-    fig2, ax2 = plt.subplots()
-    ax2.imshow(img, cmap='gray')
-    for i, (x, y) in enumerate(ref_points):
-        ax2.plot(x, y, 'ro', markersize=3)
-        ax2.text(x + 4, y + 4, str(i + 1), color='yellow', fontsize=7)
-    xs, ys = zip(*ref_points)
-    ax2.plot(xs, ys, 'r-', lw=1)
-    ax2.set_title("采样结果预览")
+def redraw_result():  # 重绘函数 将用户选择的点同时绘制在四张图上
+    fig2, axs = plt.subplots(2, 2, figsize=(8, 6))
+    axs = axs.flatten()
+
+    for idx, (path, (ox, oy)) in enumerate(zip(file_paths, origin_points)):
+        img_i = Image.open(path).convert("L")
+        width, height = img_i.size
+        cx, cy = width // 2, height // 2
+        half_w, half_h = width // 4, height // 4  # 显示 1/2 区域
+
+        ax = axs[idx]
+        ax.imshow(img_i, cmap='gray')
+        ax.axis('off')  # 关闭坐标轴
+
+        # 设置显示中心区域
+        ax.set_xlim(cx - half_w, cx + half_w)
+        ax.set_ylim(cy + half_h, cy - half_h)  # 注意图像y轴方向向下
+
+        # 相对于当前图原点的位置
+        relative_pts = [(x - ref_origin[0] + ox, y - ref_origin[1] + oy) for (x, y) in ref_points]
+
+        for i, (x, y) in enumerate(relative_pts):
+            ax.plot(x, y, 'ro', markersize=3)
+            ax.text(x + 4, y + 4, str(i + 1), color='blue', fontsize=7)
+
+        xs, ys = zip(*relative_pts)
+        ax.plot(xs, ys, 'r-', lw=1)
+
+        # 显示图像中心区域
+        ax.set_xlim(cx - half_w, cx + half_w)
+        ax.set_ylim(cy + half_h, cy - half_h)
+
+        # 获取当前显示区域的左上角坐标
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        vtext = '\n'.join(file_to_grayname[os.path.basename(path)])
+
+        # 在“可见区域的最左边”添加竖排文字，稍微靠里一些
+        ax.text(x0 - 30, y1 + 10, vtext,
+                color='white',
+                fontsize=15,
+                ha='left',
+                va='top',
+                linespacing=1.2,
+                bbox=dict(facecolor='black', alpha=0.5, pad=1))
+
     mng = plt.get_current_fig_manager()
     backend = plt.get_backend()
     if backend == "TkAgg":
         try:
-            mng.resize(*mng.window.wm_maxsize())  # Tkinter 最大化
+            mng.resize(*mng.window.wm_maxsize())
         except Exception as e:
             print("⚠️ TkAgg 无法最大化窗口：", e)
-
     elif backend.startswith("Qt"):
         try:
             mng.window.showMaximized()
         except Exception as e:
             print("⚠️ Qt 后端最大化失败：", e)
-
     elif backend == "WXAgg":
         try:
             mng.frame.Maximize(True)
         except Exception as e:
             print("⚠️ WX 后端最大化失败：", e)
 
+    # plt.tight_layout()  ← 删除或注释掉这行
+    plt.subplots_adjust(wspace=0.05, hspace=0.05, left=0.25, right=0.75, top=0.95, bottom=0.1)
     plt.show(block=False)
     plt.pause(0.1)
+    # print("Backend:", matplotlib.get_backend())
 
 
-def clear_previous_tool():
+def clear_previous_tool():  # 换绘制工具用
     # 清除事件监听
     for cid in active_listeners:
         fig.canvas.mpl_disconnect(cid)
@@ -158,7 +209,7 @@ def clear_previous_tool():
     fig.canvas.draw_idle()
 
 
-def line_tool(event):
+def line_tool(event):  # 直线工具
     global ref_points, sampling_complete
     clear_previous_tool()
     ref_points.clear()
@@ -217,7 +268,7 @@ def line_tool(event):
     active_listeners.append(cid_move)
 
 
-def ellipse_tool(event):
+def ellipse_tool(event):  # 椭圆工具
     global ref_points, sampling_complete
     clear_previous_tool()
     ref_points.clear()
@@ -287,7 +338,7 @@ def ellipse_tool(event):
     active_listeners.append(cid_move)
 
 
-def free_tool(event):
+def free_tool(event):  # 锚点（自由）工具
     global ref_points, sampling_complete
     clear_previous_tool()
     ref_points.clear()
@@ -295,6 +346,7 @@ def free_tool(event):
     fig.canvas.draw()
 
     coords = []
+    pt_artists = []  # 👈 新增：记录点对象
     preview_line, = ax.plot([], [], '--', color='red')
     active_preview.append(preview_line)
 
@@ -315,11 +367,14 @@ def free_tool(event):
             return
         if evt.button == 3 and coords:  # 右键撤销
             coords.pop()
+            artist = pt_artists.pop()
+            artist.remove()  # 👈 删除该点的 artist
             preview_line.set_data(zip(*coords) if coords else ([], []))
             fig.canvas.draw_idle()
         else:
             coords.append((evt.xdata, evt.ydata))
-            ax.plot(evt.xdata, evt.ydata, marker='o', color='blue', markersize=3)
+            pt_artist, = ax.plot(evt.xdata, evt.ydata, marker='o', color='blue', markersize=3)
+            pt_artists.append(pt_artist)  # 👈 保存 artist
             fig.canvas.draw_idle()
 
     def done_sampling():
@@ -493,13 +548,9 @@ print(s_data.to_string(index=False))
 
 redraw_result()
 
-# --- Step 10: 使用 PyVista 绘图（包含连线 + 方向箭头） ---
-import pyvista as pv
-import numpy as np
-
+# --- Step 10: 使用 PyVista 绘制庞加莱球 ---
 plotter = pv.Plotter(window_size=[800, 800])
 plotter.set_background("white")
-
 
 # 添加球体
 sphere = pv.Sphere(radius=1.0, theta_resolution=100, phi_resolution=50)
@@ -523,8 +574,6 @@ circle.lines = lines
 
 plotter.add_mesh(circle, color="gray", line_width=2)
 
-
-
 # 添加正向箭头坐标轴
 arrow_x = pv.Arrow(start=(0, 0, 0), direction=(1, 0, 0), scale=1.3,
                    tip_length=0.05, tip_radius=0.02, shaft_radius=0.01)
@@ -544,7 +593,7 @@ plotter.add_lines(np.array([[0, 0, 0], [0, 1.3, 0]]), color="black", width=1.5)
 plotter.add_lines(np.array([[0, 0, 0], [0, 0, -1.3]]), color="black", width=1.5)
 
 # 添加轴标签
-plotter.add_point_labels(np.array([[1.5, 0, 0], [0, -1.5, 0], [0, 0, 1.5]]),
+plotter.add_point_labels(np.array([[1.4, 0, 0], [0, -1.4, 0], [0, 0, 1.4]]),
                          ["S2*", "S1*", "S3*"], text_color="black")
 
 # 添加数据点
@@ -584,10 +633,10 @@ for i in range(len(points) - 1):
 table_shown = [False]  # 用列表包装以在闭包中可修改
 table_actor = [None]
 
-
 # 添加按钮控制的表格显示
 table_shown = [False]
 table_actor = [None]
+
 
 def toggle_table(flag):
     if table_shown[0]:
@@ -625,13 +674,13 @@ def toggle_table(flag):
                                           name='data_table')
     table_shown[0] = not table_shown[0]
 
+
 # 添加左下角的按钮（避免遮挡表格）
 plotter.add_checkbox_button_widget(toggle_table, value=False, position=(20, 20), size=25)
 
 # 添加主标题
 plotter.add_text("Poincaré sphere", position='upper_edge',
                  font_size=16, color='black')  # courier 比较粗
-
 
 # 添加右下角脚注
 footer_text = (
@@ -644,9 +693,28 @@ plotter.add_text(
     footer_text,
     position='lower_right',
     font_size=10,
-    color='#333333',          # 深灰色
+    color='#333333',  # 深灰色
 )
-
 
 # 显示交互窗口
 plotter.show(title="Stokes Sphere Visualization")
+
+# def run_matplotlib_preview():
+#     redraw_result()
+#     import matplotlib.pyplot as plt
+#     print("test")
+#     plt.show()
+#
+#
+# if __name__ == '__main__':
+#     import multiprocessing
+#
+#     # 启动 matplotlib 子进程
+#     p = multiprocessing.Process(target=run_matplotlib_preview)
+#     p.start()
+#
+#     # 主进程显示 PyVista 图
+#     plotter.show(title="Stokes Sphere Visualization")
+#
+#     # 等待 matplotlib 进程退出
+#     p.join()
